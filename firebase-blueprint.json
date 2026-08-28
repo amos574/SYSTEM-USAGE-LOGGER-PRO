@@ -1,0 +1,169 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with authentication and trial subscription state",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "photoURL": { "type": "string", "maxLength": 512 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "trialStartDate": { "type": "string" },
+        "trialEndDate": { "type": "string" },
+        "trialStartedAt": { "type": "string" },
+        "trialEndsAt": { "type": "string" },
+        "trialDaysTotal": { "type": "number" },
+        "trialDaysRemaining": { "type": "number" },
+        "trialStatus": { "type": "string", "enum": ["active", "expired"] },
+        "welcomeEmailSent": { "type": "boolean" },
+        "welcomeEmailSentAt": { "type": "string" },
+        "welcomeEmailMessageId": { "type": "string" },
+        "sampleDataProvisioned": { "type": "boolean" },
+        "samplePdfUrl": { "type": "string" },
+        "sampleExcelUrl": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Device": {
+      "title": "Device",
+      "description": "Monitored Windows or workstation device",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "deviceName": { "type": "string", "maxLength": 128 },
+        "os": { "type": "string", "maxLength": 64 },
+        "agentVersion": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["online", "offline", "locked", "sleeping"] },
+        "lastSeen": { "type": "string" },
+        "registeredAt": { "type": "string" },
+        "isSample": { "type": "boolean" },
+        "environment": { "type": "string", "enum": ["PRODUCTION", "TRIAL"] }
+      },
+      "required": ["userId", "deviceName"]
+    },
+    "UsageSession": {
+      "title": "UsageSession",
+      "description": "Calculated active session duration for a device",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "deviceId": { "type": "string", "maxLength": 128 },
+        "deviceName": { "type": "string", "maxLength": 128 },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "durationMinutes": { "type": "number" },
+        "sessionType": { "type": "string" },
+        "isSample": { "type": "boolean" },
+        "environment": { "type": "string", "enum": ["PRODUCTION", "TRIAL"] }
+      },
+      "required": ["userId", "deviceId", "startTime"]
+    },
+    "SystemEvent": {
+      "title": "SystemEvent",
+      "description": "Recorded hardware and OS lifecycle event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "deviceId": { "type": "string", "maxLength": 128 },
+        "deviceName": { "type": "string", "maxLength": 128 },
+        "eventType": { "type": "string", "enum": ["STARTUP", "SHUTDOWN", "LOCK", "UNLOCK", "SLEEP", "WAKE"] },
+        "timestamp": { "type": "string" },
+        "isSample": { "type": "boolean" },
+        "environment": { "type": "string", "enum": ["PRODUCTION", "TRIAL"] }
+      },
+      "required": ["userId", "deviceId", "eventType", "timestamp"]
+    },
+    "MonthlyReport": {
+      "title": "MonthlyReport",
+      "description": "Historical generated usage report metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "month": { "type": "string", "maxLength": 32 },
+        "year": { "type": "number" },
+        "pdfUrl": { "type": "string" },
+        "excelUrl": { "type": "string" },
+        "totalActiveHours": { "type": "number" },
+        "totalDevices": { "type": "number" },
+        "generatedAt": { "type": "string" },
+        "environment": { "type": "string", "enum": ["PRODUCTION", "TRIAL"] }
+      },
+      "required": ["userId", "month", "year"]
+    },
+    "ReportRecipient": {
+      "title": "ReportRecipient",
+      "description": "Configured recipient for scheduled monthly usage reports",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "name": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "email"]
+    },
+    "EmailLog": {
+      "title": "EmailLog",
+      "description": "Log of dispatched system emails with idempotency tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "emailType": { "type": "string", "maxLength": 64 },
+        "recipient": { "type": "string", "maxLength": 256 },
+        "status": { "type": "string", "enum": ["SENT", "FAILED", "PENDING"] },
+        "messageId": { "type": "string" },
+        "sentAt": { "type": "string" }
+      },
+      "required": ["userId", "emailType", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile with account info and 7-day Pro trial data"
+    },
+    "/devices/{deviceId}": {
+      "schema": "Device",
+      "description": "Monitored devices linked to a user"
+    },
+    "/usageSessions/{sessionId}": {
+      "schema": "UsageSession",
+      "description": "Calculated usage sessions"
+    },
+    "/systemEvents/{eventId}": {
+      "schema": "SystemEvent",
+      "description": "Monitored hardware and OS lifecycle events"
+    },
+    "/reports/{reportId}": {
+      "schema": "MonthlyReport",
+      "description": "Monthly and trial report metadata records"
+    },
+    "/monthlyReports/{reportId}": {
+      "schema": "MonthlyReport",
+      "description": "Monthly report archive records"
+    },
+    "/reportRecipients/{recipientId}": {
+      "schema": "ReportRecipient",
+      "description": "Configured recipients for monthly reports"
+    },
+    "/email_logs/{logId}": {
+      "schema": "EmailLog",
+      "description": "Email dispatch idempotency and audit logs"
+    }
+  }
+}

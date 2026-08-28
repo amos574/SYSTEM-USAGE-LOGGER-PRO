@@ -1,0 +1,6 @@
+{
+  "name": "System Usage Logger Pro",
+  "description": "Automated computer usage monitoring and reporting platform with multi-device tracking, real-time telemetry events, PDF/Excel generation, automated monthly Gmail report dispatching, Google Drive cloud backups, and cross-platform native Python client.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

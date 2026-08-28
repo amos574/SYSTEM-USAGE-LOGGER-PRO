@@ -1,0 +1,27 @@
+{
+  "name": "System Usage Logger Pro",
+  "short_name": "System Usage Logger Pro",
+  "description": "Automated computer usage monitoring and reporting platform with multi-device tracking, real-time events, and Windows background agent.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#2563EB",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

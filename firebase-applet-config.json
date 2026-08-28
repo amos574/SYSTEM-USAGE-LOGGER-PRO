@@ -1,0 +1,12 @@
+{
+  "projectId": "system-usage-logger-pro",
+  "firestoreDatabaseId": "ai-studio-systemusagelogge-d54ed719-4af6-4b51-a8c0-d8d482a8f242",
+  "appId": "1:573855090615:web:a5cdd5661348912243ca32",
+  "apiKey": "AIzaSyB15YRf8KVnenf3TW_MbgK5sHCt096eyiA",
+  "authDomain": "system-usage-logger-pro.firebaseapp.com",
+  "storageBucket": "system-usage-logger-pro.firebasestorage.app",
+  "messagingSenderId": "573855090615",
+  "measurementId": "",
+  "oAuthClientId": "573855090615-s9mtceegn2mka9lgm9nof6smkcl4unri.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
+}

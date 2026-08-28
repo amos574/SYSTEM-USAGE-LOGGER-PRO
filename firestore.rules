@@ -1,0 +1,113 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && (
+        (resource != null && (resource.data.uid == request.auth.uid || resource.data.userId == request.auth.uid)) ||
+        (request.resource != null && (request.resource.data.uid == request.auth.uid || request.resource.data.userId == request.auth.uid))
+      );
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Devices Collection
+    match /devices/{deviceId} {
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || resource.data.userId == request.auth.uid
+      );
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.uid == request.auth.uid || request.resource.data.userId == request.auth.uid
+      );
+      allow delete: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || resource.data.userId == request.auth.uid
+      );
+    }
+
+    // System Events Collections (system_events & systemEvents)
+    match /system_events/{eventId} {
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.uid == request.auth.uid
+      );
+      allow delete: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+    }
+
+    match /systemEvents/{eventId} {
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.uid == request.auth.uid
+      );
+      allow delete: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+    }
+
+    // Usage Sessions Collections (usage_sessions & usageSessions)
+    match /usage_sessions/{sessionId} {
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.uid == request.auth.uid
+      );
+      allow delete: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+    }
+
+    match /usageSessions/{sessionId} {
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.uid == request.auth.uid
+      );
+      allow delete: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid
+      );
+    }
+
+    // Audit Logs & Diagnostics
+    match /audit_logs/{logId} {
+      allow read, write: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || request.resource.data.uid == request.auth.uid
+      );
+    }
+
+    match /auditLogs/{logId} {
+      allow read, write: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || request.resource.data.uid == request.auth.uid
+      );
+    }
+
+    match /diagnostics/{diagId} {
+      allow read, write: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || request.resource.data.uid == request.auth.uid
+      );
+    }
+
+    // Default catch-all for other user-scoped data
+    match /{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}
