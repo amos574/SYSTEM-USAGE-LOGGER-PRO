@@ -9,6 +9,42 @@ import {
   DeviceState
 } from '../types';
 
+/**
+ * Robust fetch helper that guarantees graceful JSON parsing and never throws
+ * "Unexpected token '<', '<!doctype '... is not valid JSON" when receiving HTML or 404s.
+ */
+export async function safeFetchJson<T = any>(
+  url: string,
+  options?: RequestInit,
+  fallback?: T
+): Promise<T> {
+  try {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+
+    if (!text || text.trim().length === 0) {
+      return (fallback ?? { success: res.ok }) as T;
+    }
+
+    if (contentType.includes('application/json') || text.trim().startsWith('{') || text.trim().startsWith('[')) {
+      try {
+        return JSON.parse(text) as T;
+      } catch (parseErr) {
+        console.warn(`[safeFetchJson] Failed to parse JSON from ${url}:`, parseErr);
+        return (fallback ?? { success: false, error: 'Invalid JSON response' }) as T;
+      }
+    }
+
+    // Response is HTML or plain text (e.g. server error or fallback)
+    console.warn(`[safeFetchJson] Non-JSON payload received from ${url} (status: ${res.status})`);
+    return (fallback ?? { success: false, error: `Server returned non-JSON (${res.status})` }) as T;
+  } catch (netErr: any) {
+    console.warn(`[safeFetchJson] Network error for ${url}:`, netErr?.message);
+    return (fallback ?? { success: false, error: netErr?.message || 'Network error' }) as T;
+  }
+}
+
 // Helper to filter out test/simulated devices
 export function isRealProductionDevice(dev: Device | any): boolean {
   if (!dev || !dev.deviceId) return false;
@@ -51,8 +87,7 @@ export async function ensureUserProfile(
   });
 
   try {
-    const res = await fetch(`/api/user/profile?uid=${encodeURIComponent(uid)}`);
-    const data = await res.json();
+    const data = await safeFetchJson<{ success?: boolean; profile?: any }>(`/api/user/profile?uid=${encodeURIComponent(uid)}`);
     if (data.success && data.profile) {
       const existing = data.profile as UserProfile;
       const trialStartDate = existing.trialStartDate || nowIso;
@@ -134,27 +169,19 @@ export async function ensureUserProfile(
 }
 
 export async function fetchOnboardingStatus(uid: string) {
-  try {
-    const resp = await fetch(`/api/onboarding/status?uid=${encodeURIComponent(uid)}`);
-    return await resp.json();
-  } catch (err) {
-    console.error('Failed to fetch onboarding status:', err);
-    return { success: false, error: 'Network error' };
-  }
+  return await safeFetchJson(`/api/onboarding/status?uid=${encodeURIComponent(uid)}`, undefined, { success: false, error: 'Network error' });
 }
 
 export async function runOnboardingAcceptanceSuite(uid: string, userEmail: string) {
-  try {
-    const resp = await fetch('/api/onboarding/test-suite', {
+  return await safeFetchJson(
+    '/api/onboarding/test-suite',
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ uid, userEmail }),
-    });
-    return await resp.json();
-  } catch (err: any) {
-    console.error('Failed to execute onboarding test suite:', err);
-    return { success: false, error: err.message || 'Network error' };
-  }
+    },
+    { success: false, error: 'Test suite failed' }
+  );
 }
 
 // Devices Real-time Polling & CRUD (Single Source of Truth via API)
@@ -163,9 +190,7 @@ export function listenUserDevices(uid: string, callback: (devices: Device[]) => 
 
   const fetchDevices = async () => {
     try {
-      const res = await fetch(`/api/devices?uid=${encodeURIComponent(uid)}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await safeFetchJson<{ success?: boolean; devices?: Device[] }>(`/api/devices?uid=${encodeURIComponent(uid)}`);
       if (isMounted && data.success && Array.isArray(data.devices)) {
         callback(data.devices);
       }
@@ -188,8 +213,7 @@ export function listenUserDevices(uid: string, callback: (devices: Device[]) => 
 
 export async function fetchUserDevices(uid: string): Promise<Device[]> {
   try {
-    const res = await fetch(`/api/devices?uid=${encodeURIComponent(uid)}`);
-    const data = await res.json();
+    const data = await safeFetchJson<{ success?: boolean; devices?: Device[] }>(`/api/devices?uid=${encodeURIComponent(uid)}`);
     return data.success && Array.isArray(data.devices) ? data.devices : [];
   } catch {
     return [];
@@ -197,12 +221,11 @@ export async function fetchUserDevices(uid: string): Promise<Device[]> {
 }
 
 export async function fetchLiveStats(uid: string) {
-  try {
-    const res = await fetch(`/api/devices/live-stats?uid=${encodeURIComponent(uid)}`);
-    return await res.json();
-  } catch {
-    return { success: false, totalDevices: 0, onlineDevices: 0, offlineDevices: 0, activeSessionsCount: 0 };
-  }
+  return await safeFetchJson(
+    `/api/devices/live-stats?uid=${encodeURIComponent(uid)}`,
+    undefined,
+    { success: false, totalDevices: 0, onlineDevices: 0, offlineDevices: 0, activeSessionsCount: 0 }
+  );
 }
 
 export async function deregisterAndPurgeDevice(
@@ -210,12 +233,15 @@ export async function deregisterAndPurgeDevice(
   uid?: string
 ): Promise<{ success: boolean; message?: string; totalSessionsPurged?: number; totalEventsPurged?: number; error?: string }> {
   try {
-    const res = await fetch('/api/devices/deregister', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceId, uid, action: 'UNINSTALL' }),
-    });
-    const data = await res.json();
+    const data = await safeFetchJson(
+      '/api/devices/deregister',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId, uid, action: 'UNINSTALL' }),
+      },
+      { success: false, error: 'Network error during device deregistration' }
+    );
     if (data.success && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('syslogger:device-deregistered', { detail: { deviceId } }));
     }
@@ -227,29 +253,30 @@ export async function deregisterAndPurgeDevice(
 }
 
 export async function purgeSimulatedVerificationDevices(uid: string): Promise<number> {
-  try {
-    const resp = await fetch('/api/agent/clean-simulated', {
+  const data = await safeFetchJson<{ deletedCount?: number }>(
+    '/api/agent/clean-simulated',
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ uid }),
-    });
-    const data = await resp.json();
-    return data.deletedCount || 0;
-  } catch {
-    return 0;
-  }
+    },
+    { deletedCount: 0 }
+  );
+  return data.deletedCount || 0;
 }
 
 export async function registerOrUpdateDevice(
   device: Partial<Device> & { deviceId: string; uid: string; deviceName: string }
 ): Promise<Device> {
   try {
-    const res = await fetch('/api/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(device),
-    });
-    const data = await res.json();
+    const data = await safeFetchJson<{ success?: boolean; device?: Device }>(
+      '/api/devices',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(device),
+      }
+    );
     if (data.success && data.device) {
       return data.device as Device;
     }
@@ -284,9 +311,9 @@ export function listenUserEvents(uid: string, limitCount: number = 200, callback
 
   const fetchEvents = async () => {
     try {
-      const res = await fetch(`/api/events?uid=${encodeURIComponent(uid)}&limit=${limitCount}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await safeFetchJson<{ success?: boolean; events?: SystemEvent[] }>(
+        `/api/events?uid=${encodeURIComponent(uid)}&limit=${limitCount}`
+      );
       if (isMounted && data.success && Array.isArray(data.events)) {
         callback(data.events);
       }
@@ -305,28 +332,30 @@ export function listenUserEvents(uid: string, limitCount: number = 200, callback
 }
 
 export async function fetchDeviceDiagnostics(uid: string, deviceId: string = '') {
-  try {
-    const res = await fetch(`/api/agent/diagnose-events?uid=${encodeURIComponent(uid)}&deviceId=${encodeURIComponent(deviceId)}`);
-    return await res.json();
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
+  return await safeFetchJson(
+    `/api/agent/diagnose-events?uid=${encodeURIComponent(uid)}&deviceId=${encodeURIComponent(deviceId)}`,
+    undefined,
+    { success: false, error: 'Diagnostics request failed' }
+  );
 }
 
 export async function ingestEventBatch(events: SystemEvent[]): Promise<{ ingested: number; updatedDeviceState?: string }> {
   if (!events || events.length === 0) return { ingested: 0 };
 
   try {
-    const res = await fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uid: events[0].uid,
-        deviceId: events[0].deviceId,
-        events,
-      }),
-    });
-    const data = await res.json();
+    const data = await safeFetchJson<{ syncedCount?: number }>(
+      '/api/sync',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: events[0].uid,
+          deviceId: events[0].deviceId,
+          events,
+        }),
+      },
+      { syncedCount: events.length }
+    );
     return { ingested: data.syncedCount || events.length };
   } catch (err) {
     console.error('ingestEventBatch error:', err);
@@ -339,8 +368,9 @@ export { computeSessionsFromEvents } from '../services/sessionCalculator';
 
 export async function recalculateSessionsForUser(uid: string): Promise<UsageSession[]> {
   try {
-    const res = await fetch(`/api/sessions?uid=${encodeURIComponent(uid)}`);
-    const data = await res.json();
+    const data = await safeFetchJson<{ success?: boolean; sessions?: UsageSession[] }>(
+      `/api/sessions?uid=${encodeURIComponent(uid)}`
+    );
     return data.success && Array.isArray(data.sessions) ? data.sessions : [];
   } catch {
     return [];
@@ -353,9 +383,9 @@ export function listenUserSessions(uid: string, callback: (sessions: UsageSessio
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch(`/api/sessions?uid=${encodeURIComponent(uid)}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await safeFetchJson<{ success?: boolean; sessions?: UsageSession[] }>(
+        `/api/sessions?uid=${encodeURIComponent(uid)}`
+      );
       if (isMounted && data.success && Array.isArray(data.sessions)) {
         callback(data.sessions);
       }
@@ -379,9 +409,9 @@ export function listenUserReports(uid: string, callback: (reports: Report[]) => 
 
   const fetchReports = async () => {
     try {
-      const res = await fetch(`/api/reports?uid=${encodeURIComponent(uid)}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await safeFetchJson<{ success?: boolean; reports?: Report[] }>(
+        `/api/reports?uid=${encodeURIComponent(uid)}`
+      );
       if (isMounted && data.success && Array.isArray(data.reports)) {
         callback(data.reports);
       }
@@ -417,9 +447,9 @@ export function listenUserRecipients(uid: string, callback: (recipients: Recipie
 
   const fetchRecipients = async () => {
     try {
-      const res = await fetch(`/api/recipients?uid=${encodeURIComponent(uid)}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await safeFetchJson<{ success?: boolean; recipients?: RecipientEmail[] }>(
+        `/api/recipients?uid=${encodeURIComponent(uid)}`
+      );
       if (isMounted && data.success && Array.isArray(data.recipients)) {
         callback(data.recipients);
       }
@@ -449,12 +479,14 @@ export async function addRecipientEmail(uid: string, email: string, name: string
   };
 
   try {
-    const res = await fetch('/api/recipients', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid, email, name }),
-    });
-    const data = await res.json();
+    const data = await safeFetchJson<{ success?: boolean; recipient?: RecipientEmail }>(
+      '/api/recipients',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid, email, name }),
+      }
+    );
     if (data.success && data.recipient) {
       return data.recipient;
     }
@@ -493,12 +525,15 @@ export async function executeCompleteCustomerCleanup(uid?: string): Promise<{
   message: string;
 }> {
   try {
-    const res = await fetch('/api/admin/clean-all-test-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid }),
-    });
-    const data = await res.json();
+    const data = await safeFetchJson<{ purgedCounts?: Record<string, number> }>(
+      '/api/admin/clean-all-test-data',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid }),
+      },
+      { purgedCounts: {} }
+    );
     return {
       success: true,
       purgedCounts: data.purgedCounts || {},

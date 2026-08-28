@@ -3092,17 +3092,16 @@ app.get('/api/agent/verify-sync', async (req, res) => {
     }
 
     try {
-      const q = query(collection(db, 'devices'), where('uid', '==', uid));
-      const snap = await getDocs(q);
-      snap.forEach((d) => {
-        const data = d.data();
+      const dbDocs = await multiDbGetDocs('devices', 'uid', uid);
+      dbDocs.forEach((data) => {
         if (isRealDevice(data)) {
           if (!realDevices.some((existing) => existing.deviceId === data.deviceId)) {
             realDevices.push(data);
           }
         } else {
-          if (!simulatedDevices.includes(d.id)) {
-            simulatedDevices.push(d.id);
+          const docId = data.id || data.deviceId;
+          if (docId && !simulatedDevices.includes(docId)) {
+            simulatedDevices.push(docId);
           }
         }
       });
@@ -4433,6 +4432,18 @@ app.post('/api/admin/clean-all-test-data', async (req, res) => {
     // Silently ignore if already deleted
   }
 })();
+
+// -------------------------------------------------------------
+// API 404 CATCH-ALL (GUARANTEES JSON FOR ALL UNMATCHED /api/*)
+// -------------------------------------------------------------
+app.all(['/api', '/api/*'], (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Not found',
+    status: 404,
+    message: `API endpoint ${req.method} ${req.originalUrl} not found`,
+  });
+});
 
 // -------------------------------------------------------------
 // VITE MIDDLEWARE & STATIC SERVING
