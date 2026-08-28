@@ -70,7 +70,7 @@ urllib3>=2.0.0
 customtkinter>=5.2.0
 `;
 
-// 3. In-Memory run.bat Generator
+// 3. In-Memory run.bat and run_agent.bat Generator
 export const generateRunBat = () => `@echo off
 setlocal enabledelayedexpansion
 
@@ -131,7 +131,7 @@ if not exist "%RUN_PY%" (
 )
 
 :: 3. Install or update dependencies
-echo [INFO] Verifying requirements (requests, psutil, customtkinter)...
+echo [INFO] Verifying requirements (requests, psutil)...
 "%RUN_PY%" -m pip install --quiet --upgrade pip >nul 2>&1
 "%RUN_PY%" -m pip install --quiet -r requirements.txt
 
@@ -144,6 +144,8 @@ echo [INFO] Launching System Usage Logger Pro Desktop Client...
 start "" "%RUN_PY%" app.py
 exit
 `;
+
+export const generateRunAgentBat = generateRunBat;
 
 // 4. In-Memory logger_client.py Generator
 export const generateLoggerClientPy = (apiUrl: string, uid: string, deviceId?: string, deviceName?: string) => `"""
@@ -183,7 +185,7 @@ from config import (
     POLL_INTERVAL_SECONDS,
 )
 
-_file_lock = threading.Lock()
+_file_lock = threading.RLock()
 
 
 def ensure_directories():
@@ -1354,6 +1356,7 @@ export async function generateClientZipBuffer(options: ClientPackageOptions): Pr
   zip.file('config.py', generateConfigPy(serverUrl, uid, deviceId, deviceName));
   zip.file('requirements.txt', generateRequirementsTxt());
   zip.file('run.bat', generateRunBat());
+  zip.file('run_agent.bat', generateRunAgentBat());
   zip.file('logger_client.py', generateLoggerClientPy(serverUrl, uid, deviceId, deviceName));
   zip.file('app.py', generateAppPy(serverUrl, uid, deviceId, deviceName));
   zip.file('Install-SysLoggerClient.ps1', generateInstallerPs1(serverUrl, uid, deviceId, deviceName));
@@ -1390,6 +1393,7 @@ export async function generateClientZipBlob(options: ClientPackageOptions): Prom
   zip.file('config.py', generateConfigPy(serverUrl, uid, deviceId, deviceName));
   zip.file('requirements.txt', generateRequirementsTxt());
   zip.file('run.bat', generateRunBat());
+  zip.file('run_agent.bat', generateRunAgentBat());
   zip.file('logger_client.py', generateLoggerClientPy(serverUrl, uid, deviceId, deviceName));
   zip.file('app.py', generateAppPy(serverUrl, uid, deviceId, deviceName));
   zip.file('Install-SysLoggerClient.ps1', generateInstallerPs1(serverUrl, uid, deviceId, deviceName));
