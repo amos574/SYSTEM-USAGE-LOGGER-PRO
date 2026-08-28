@@ -83,6 +83,10 @@ if (-not $DeviceId -or $DeviceId -eq "PC-AUTO") {
 }
 
 $configObj = [ordered]@{
+    account_uid = $Uid
+    device_id = $DeviceId
+    device_name = if ($DeviceName -and $DeviceName -ne "WINDOWS-WORKSTATION") { $DeviceName } else { $env:COMPUTERNAME }
+    server_url = $ServerUrl.TrimEnd('/')
     uid = $Uid
     deviceId = $DeviceId
     deviceName = if ($DeviceName -and $DeviceName -ne "WINDOWS-WORKSTATION") { $DeviceName } else { $env:COMPUTERNAME }
@@ -1564,6 +1568,10 @@ if ([string]::IsNullOrWhiteSpace($DeviceName)) {
 }
 
 $ConfigData = [ordered]@{
+    account_uid = $Uid
+    device_id = $DeviceId
+    device_name = $DeviceName
+    server_url = $ServerUrl
     uid = $Uid
     deviceId = $DeviceId
     deviceName = $DeviceName

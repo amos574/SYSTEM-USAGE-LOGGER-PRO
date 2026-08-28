@@ -22,6 +22,7 @@ CLIENT_TYPE = "Native Python Desktop Client"
 # Injected User Credentials & Target Server
 API_BASE_URL = "${apiUrl}"
 USER_UID = "${uid}"
+ACCOUNT_UID = "${uid}"
 DEFAULT_DEVICE_ID = "${deviceId || 'PC-AUTO'}"
 DEFAULT_DEVICE_NAME = "${deviceName || 'MY-WINDOWS-PC'}"
 POLL_INTERVAL_SECONDS = 60
@@ -34,6 +35,7 @@ else:
 
 APP_DIR = os.path.join(APPDATA_BASE, "syslogger-pro")
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+LOCAL_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 OFFLINE_QUEUE_FILE = os.path.join(APP_DIR, "offline_queue.json")
 LOGS_DIR = os.path.join(APP_DIR, "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "agent.log")
@@ -204,32 +206,67 @@ def get_default_device_id():
 
 
 def load_config() -> dict:
-    """Load configuration from config.json or return defaults."""
+    """Load configuration from local or AppData config.json or return defaults."""
     ensure_directories()
     with _file_lock:
-        if os.path.exists(CONFIG_FILE):
+        local_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        cwd_cfg = os.path.join(os.getcwd(), "config.json")
+        candidate_paths = [local_cfg, cwd_cfg, CONFIG_FILE]
+
+        found_data = None
+        for p in candidate_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict) and (data.get("account_uid") or data.get("uid") or data.get("device_id") or data.get("deviceId")):
+                            found_data = data
+                            break
+                except Exception as e:
+                    append_log(f"Notice reading config file {p}: {e}", "DEBUG")
+
+        if found_data:
+            resolved_uid = found_data.get("account_uid") or found_data.get("uid") or USER_UID or "${uid}"
+            resolved_device_id = found_data.get("device_id") or found_data.get("deviceId") or DEFAULT_DEVICE_ID or "${deviceId || 'PC-AUTO'}"
+            resolved_device_name = found_data.get("device_name") or found_data.get("deviceName") or DEFAULT_DEVICE_NAME or "${deviceName || 'MY-WINDOWS-PC'}"
+            resolved_server_url = found_data.get("server_url") or found_data.get("serverUrl") or DEFAULT_SERVER_URL or "${apiUrl}"
+
+            cfg = {
+                "account_uid": resolved_uid,
+                "device_id": resolved_device_id,
+                "device_name": resolved_device_name,
+                "server_url": resolved_server_url,
+                "uid": resolved_uid,
+                "deviceId": resolved_device_id,
+                "deviceName": resolved_device_name,
+                "serverUrl": resolved_server_url,
+                "agentVersion": found_data.get("agentVersion", APP_VERSION),
+                "lastSync": found_data.get("lastSync", None),
+                "created": found_data.get("created", datetime.now(timezone.utc).isoformat()),
+            }
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        if not data.get("serverUrl"):
-                            data["serverUrl"] = DEFAULT_SERVER_URL or API_BASE_URL
-                        if not data.get("uid"):
-                            data["uid"] = USER_UID
-                        if not data.get("deviceId"):
-                            data["deviceId"] = DEFAULT_DEVICE_ID or get_default_device_id()
-                        if not data.get("deviceName"):
-                            data["deviceName"] = DEFAULT_DEVICE_NAME or socket.gethostname()
-                        return data
-            except Exception as e:
-                append_log(f"Failed loading config.json: {e}", "WARN")
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2)
+            except Exception:
+                pass
+            append_log(f"Auto-loaded config.json: Device={resolved_device_id} ({resolved_device_name}), UID={resolved_uid}", "INFO")
+            return cfg
 
         # Defaults
+        resolved_uid = USER_UID or "${uid}"
+        resolved_device_id = DEFAULT_DEVICE_ID or "${deviceId || 'PC-AUTO'}"
+        resolved_device_name = DEFAULT_DEVICE_NAME or "${deviceName || 'MY-WINDOWS-PC'}"
+        resolved_server_url = DEFAULT_SERVER_URL or "${apiUrl}"
+
         default_config = {
-            "uid": USER_UID or "${uid}",
-            "deviceId": DEFAULT_DEVICE_ID or "${deviceId || 'PC-AUTO'}",
-            "deviceName": DEFAULT_DEVICE_NAME or "${deviceName || 'MY-WINDOWS-PC'}",
-            "serverUrl": DEFAULT_SERVER_URL or "${apiUrl}",
+            "account_uid": resolved_uid,
+            "device_id": resolved_device_id,
+            "device_name": resolved_device_name,
+            "server_url": resolved_server_url,
+            "uid": resolved_uid,
+            "deviceId": resolved_device_id,
+            "deviceName": resolved_device_name,
+            "serverUrl": resolved_server_url,
             "agentVersion": APP_VERSION,
             "lastSync": None,
             "created": datetime.now(timezone.utc).isoformat(),
@@ -247,8 +284,33 @@ def save_config(config_data: dict) -> bool:
     ensure_directories()
     with _file_lock:
         try:
+            # Keep both naming conventions aligned
+            uid = config_data.get("account_uid") or config_data.get("uid") or USER_UID
+            dev_id = config_data.get("device_id") or config_data.get("deviceId") or DEFAULT_DEVICE_ID
+            dev_name = config_data.get("device_name") or config_data.get("deviceName") or DEFAULT_DEVICE_NAME
+            srv_url = config_data.get("server_url") or config_data.get("serverUrl") or DEFAULT_SERVER_URL
+
+            config_data["account_uid"] = uid
+            config_data["uid"] = uid
+            config_data["device_id"] = dev_id
+            config_data["deviceId"] = dev_id
+            config_data["device_name"] = dev_name
+            config_data["deviceName"] = dev_name
+            config_data["server_url"] = srv_url
+            config_data["serverUrl"] = srv_url
+
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, indent=2)
+            
+            # Also sync local config if present
+            local_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            if os.path.exists(local_cfg):
+                try:
+                    with open(local_cfg, "w", encoding="utf-8") as f:
+                        json.dump(config_data, f, indent=2)
+                except Exception:
+                    pass
+
             append_log("Configuration saved successfully", "INFO")
             return True
         except Exception as e:
@@ -674,13 +736,21 @@ class SysLoggerDesktopApp:
         self._build_ui()
         self._start_periodic_checks()
 
+        uid_val = self.config.get("account_uid") or self.config.get("uid") or USER_UID or "Not configured"
+        dev_id = self.config.get("device_id") or self.config.get("deviceId") or "PC-AUTO"
+        dev_name = self.config.get("device_name") or self.config.get("deviceName") or "MY-WINDOWS-PC"
+        srv_url = self.config.get("server_url") or self.config.get("serverUrl") or DEFAULT_SERVER_URL
+
         self.log_to_console(f"=== {APP_NAME} Desktop Client initialized ===", "INFO")
-        self.log_to_console(f"Config: {CONFIG_FILE}", "INFO")
-        self.log_to_console(f"Target Server: {self.config.get('serverUrl')}", "INFO")
+        self.log_to_console(f"[CONFIG] Target Device ID: {dev_id}", "INFO")
+        self.log_to_console(f"[CONFIG] Device Name: {dev_name}", "INFO")
+        self.log_to_console(f"[CONFIG] Account UID: {uid_val}", "INFO")
+        self.log_to_console(f"[CONFIG] Server URL: {srv_url}", "INFO")
+        self.log_to_console(f"[STATUS] Auto-loaded config.json successfully (Zero manual input required)", "PASS")
 
         # Initial background verification
         self.action_check_health()
-        if self.config.get("uid"):
+        if uid_val and uid_val != "Not configured":
             self.action_show_device_status()
         else:
             self.log_to_console("Notice: User Account UID is configured. Initializing sync...", "LOCAL")
@@ -1064,10 +1134,14 @@ if (-not $DeviceId) {
     $DeviceId = "PC-$cleanHost"
 }
 
-$configObj = @{
+$configObj = [ordered]@{
+    account_uid = $Uid
+    device_id = $DeviceId
+    device_name = if ($DeviceName) { $DeviceName } else { $env:COMPUTERNAME }
+    server_url = $ServerUrl.TrimEnd('/')
     uid = $Uid
     deviceId = $DeviceId
-    deviceName = $env:COMPUTERNAME
+    deviceName = if ($DeviceName) { $DeviceName } else { $env:COMPUTERNAME }
     serverUrl = $ServerUrl.TrimEnd('/')
     agentVersion = "1.0.3"
     clientType = "Python-Native"
@@ -1222,6 +1296,10 @@ Write-Host "====================================================================
 
 // 8. In-Memory config.json Generator
 export const generateConfigJson = (apiUrl: string, uid: string, deviceId?: string, deviceName?: string) => JSON.stringify({
+  account_uid: uid || 'DEMO_USER_UID',
+  device_id: deviceId || 'PC-AUTO',
+  device_name: deviceName || 'MY-WINDOWS-PC',
+  server_url: apiUrl,
   uid: uid || 'DEMO_USER_UID',
   deviceId: deviceId || 'PC-AUTO',
   deviceName: deviceName || 'MY-WINDOWS-PC',

@@ -13,7 +13,10 @@ import {
   Activity,
   Laptop,
   FolderArchive,
-  Play
+  Play,
+  FileCode,
+  Sparkles,
+  RefreshCw
 } from 'lucide-react';
 import {
   generateWindowsInstallerScript,
@@ -25,6 +28,7 @@ import {
   downloadPythonClientZip,
   AgentReleaseInfo
 } from '../lib/exeReleaseStatus';
+import { generateConfigJson, downloadScriptBlob } from '../services/agentPackager';
 
 interface AgentInstallModalProps {
   uid: string;
@@ -36,12 +40,18 @@ export const AgentInstallModal: React.FC<AgentInstallModalProps> = ({ uid, isOpe
   const [copiedInstaller, setCopiedInstaller] = useState(false);
   const [copiedUninstaller, setCopiedUninstaller] = useState(false);
   const [copiedPythonScript, setCopiedPythonScript] = useState(false);
+  const [copiedConfigJson, setCopiedConfigJson] = useState(false);
   const [activeTab, setActiveTab] = useState<'python' | 'ps1' | 'diagnostics' | 'uninstaller'>('python');
   const [deviceIdInput, setDeviceIdInput] = useState('');
   const [deviceNameInput, setDeviceNameInput] = useState('MY-WINDOWS-PC');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloadingZip, setIsDownloadingZip] = useState(false);
   const [releaseInfo, setReleaseInfo] = useState<AgentReleaseInfo | null>(null);
+
+  const generateRandomDeviceId = () => {
+    const hex = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setDeviceIdInput(`PC-${hex}`);
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -62,6 +72,15 @@ export const AgentInstallModal: React.FC<AgentInstallModalProps> = ({ uid, isOpe
     deviceName: deviceNameInput.trim() || 'MY-WINDOWS-PC',
     serverUrl,
   }), [safeUid, deviceIdInput, deviceNameInput, serverUrl]);
+
+  const dynamicConfigJsonString = useMemo(() => {
+    return JSON.stringify({
+      account_uid: config.uid,
+      device_id: config.deviceId,
+      device_name: config.deviceName,
+      server_url: config.serverUrl,
+    }, null, 2);
+  }, [config]);
 
   const { installerScript, pythonSetupScript, uninstallerScript, generationError } = useMemo(() => {
     try {
@@ -95,12 +114,33 @@ export const AgentInstallModal: React.FC<AgentInstallModalProps> = ({ uid, isOpe
         uid: config.uid,
         deviceId: config.deviceId,
         deviceName: config.deviceName,
+        serverUrl: config.serverUrl,
       });
     } catch (err: any) {
       console.error('Download Python Client ZIP error:', err);
       setDownloadError(err.message || 'Unable to download Python Client package right now.');
     } finally {
       setIsDownloadingZip(false);
+    }
+  };
+
+  const handleDownloadConfigJson = () => {
+    try {
+      setDownloadError(null);
+      const content = generateConfigJson(config.serverUrl, config.uid, config.deviceId, config.deviceName);
+      downloadScriptBlob('config.json', content, 'application/json;charset=utf-8');
+    } catch (err: any) {
+      setDownloadError(err?.message || 'Failed to download config.json');
+    }
+  };
+
+  const handleCopyConfigJson = async () => {
+    try {
+      await navigator.clipboard.writeText(dynamicConfigJsonString);
+      setCopiedConfigJson(true);
+      setTimeout(() => setCopiedConfigJson(false), 2500);
+    } catch (err) {
+      console.error('Copy config.json error:', err);
     }
   };
 
@@ -303,27 +343,77 @@ export const AgentInstallModal: React.FC<AgentInstallModalProps> = ({ uid, isOpe
         <div className="p-6 overflow-y-auto space-y-6 text-xs text-slate-300 flex-1">
           
           {/* Target Configuration */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-950/40 p-4 rounded-xl border border-slate-800">
-            <div>
-              <label className="block font-medium text-slate-300 mb-1">Target Device ID (Auto Generated)</label>
-              <input
-                id="input-device-id"
-                type="text"
-                placeholder="Auto-generated (e.g. PC-A1B2C3D4)"
-                value={deviceIdInput}
-                onChange={(e) => setDeviceIdInput(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
-              />
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-1.5">
+                <Laptop className="w-3.5 h-3.5 text-blue-400" />
+                <span>Target Workstation Configuration</span>
+              </span>
+              <button
+                type="button"
+                onClick={generateRandomDeviceId}
+                className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold flex items-center space-x-1 hover:underline"
+                title="Generate Random Device ID"
+              >
+                <Sparkles className="w-3 h-3 text-amber-400" />
+                <span>🎲 Generate Device ID</span>
+              </button>
             </div>
-            <div>
-              <label className="block font-medium text-slate-300 mb-1">Device Name</label>
-              <input
-                id="input-device-name"
-                type="text"
-                value={deviceNameInput}
-                onChange={(e) => setDeviceNameInput(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-              />
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-medium text-slate-300 mb-1">Target Device ID (e.g. ADMIN---2, PC-AUTO)</label>
+                <input
+                  id="input-device-id"
+                  type="text"
+                  placeholder="e.g. ADMIN---2 or PC-AUTO"
+                  value={deviceIdInput}
+                  onChange={(e) => setDeviceIdInput(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-slate-300 mb-1">Device Name (e.g. TEST---2)</label>
+                <input
+                  id="input-device-name"
+                  type="text"
+                  placeholder="e.g. TEST---2"
+                  value={deviceNameInput}
+                  onChange={(e) => setDeviceNameInput(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Dynamic config.json Live Output Preview */}
+            <div className="bg-slate-900/90 rounded-lg border border-slate-800 p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                <span className="font-mono text-cyan-400 font-bold flex items-center space-x-1">
+                  <FileCode className="w-3 h-3" />
+                  <span>config.json (Auto-loaded on startup)</span>
+                </span>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyConfigJson}
+                    className="text-slate-400 hover:text-white flex items-center space-x-1"
+                  >
+                    {copiedConfigJson ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedConfigJson ? 'Copied' : 'Copy JSON'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadConfigJson}
+                    className="text-blue-400 hover:text-blue-300 font-bold flex items-center space-x-1"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Download config.json</span>
+                  </button>
+                </div>
+              </div>
+              <pre className="text-[10px] font-mono text-emerald-400 bg-black/40 p-2 rounded overflow-x-auto leading-tight">
+                {dynamicConfigJsonString}
+              </pre>
             </div>
           </div>
 
