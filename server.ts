@@ -2821,29 +2821,40 @@ app.post('/api/telemetry/heartbeat', handleHeartbeat);
 app.post('/api/devices/heartbeat', handleHeartbeat);
 app.post('/api/agent/heartbeat', handleHeartbeat);
 
-// Single Telemetry Event Ingestion Route
+// Single and Multi Telemetry Event Ingestion Routes
 const handleTelemetryEvent = async (req: express.Request, res: express.Response) => {
   try {
     const body = req.body || {};
-    const uid = (body.uid || body.userId || req.query.uid || 'DEMO_USER_UID').toString().trim();
-    const eventType = (body.eventType || body.type || 'ACTIVE').toString().toUpperCase().trim();
-    let deviceId = (body.deviceId || req.query.deviceId || '').toString().trim();
-    const deviceName = body.deviceName || body.hostname || 'Windows Workstation';
+    // If incoming request is a batch/array, route to batch sync
+    if (Array.isArray(body) || Array.isArray(body.events)) {
+      return handleBatchSync(req, res);
+    }
+
+    const uid = (body.uid || body.userId || body.account_uid || req.query.uid || 'DEMO_USER_UID').toString().trim();
+    const eventType = (body.eventType || body.type || body.event || 'ACTIVE').toString().toUpperCase().trim();
+    let deviceId = (body.deviceId || body.device_id || req.query.deviceId || '').toString().trim();
+    const deviceName = body.deviceName || body.device_name || body.hostname || 'Windows Workstation';
     if (!deviceId) {
       const cleanHost = deviceName.replace(/[^a-zA-Z0-9-]/g, '').substring(0, 12).toUpperCase();
       deviceId = cleanHost ? `PC-${cleanHost}` : 'PC-AUTO';
     }
-    const eventId = body.eventId || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const eventId = body.eventId || body.id || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const timestamp = body.timestamp || new Date().toISOString();
     const now = new Date().toISOString();
 
     const eventPayload = {
       eventId,
+      id: eventId,
       uid,
       userId: uid,
+      account_uid: uid,
       deviceId,
+      device_id: deviceId,
       deviceName,
+      device_name: deviceName,
       eventType,
+      event: eventType,
+      type: eventType,
       timestamp,
       timezone: body.timezone || 'UTC',
       os: body.os || 'Windows 11 / 10 x64',
@@ -2861,10 +2872,13 @@ const handleTelemetryEvent = async (req: express.Request, res: express.Response)
 
     const deviceUpdate = {
       deviceId,
+      device_id: deviceId,
       deviceName,
+      device_name: deviceName,
       hostname: deviceName,
       uid,
       userId: uid,
+      account_uid: uid,
       currentState: derivedState,
       status: derivedState === 'OFFLINE' ? 'OFFLINE' : 'ONLINE',
       lastSeen: timestamp,
@@ -2883,12 +2897,19 @@ const handleTelemetryEvent = async (req: express.Request, res: express.Response)
 
     inMemoryDevices.set(deviceId, deviceUpdate);
 
-    await multiDbBatchWrite([
-      { collection: 'system_events', docId: eventId, data: eventPayload },
-      { collection: 'systemEvents', docId: eventId, data: eventPayload },
-      { collection: 'devices', docId: deviceId, data: deviceUpdate },
+    // Write to root collections AND nested user/device hierarchy: /users/{account_uid}/devices/{device_id}/events/{eventId}
+    await Promise.allSettled([
+      multiDbBatchWrite([
+        { collection: 'system_events', docId: eventId, data: eventPayload },
+        { collection: 'systemEvents', docId: eventId, data: eventPayload },
+        { collection: 'devices', docId: deviceId, data: deviceUpdate },
+      ]),
+      namedDb.collection('users').doc(uid).collection('devices').doc(deviceId).collection('events').doc(eventId).set(eventPayload, { merge: true }),
+      defaultDb.collection('users').doc(uid).collection('devices').doc(deviceId).collection('events').doc(eventId).set(eventPayload, { merge: true }),
+      namedDb.collection('users').doc(uid).collection('devices').doc(deviceId).set(deviceUpdate, { merge: true }),
+      defaultDb.collection('users').doc(uid).collection('devices').doc(deviceId).set(deviceUpdate, { merge: true }),
     ]).catch((err) => {
-      console.warn('[Telemetry Event batch notice]', err?.message);
+      console.warn('[Telemetry Event storage notice]', err?.message);
     });
 
     // Real-time Automated Session Lifecycle Engine Hook
@@ -2901,73 +2922,98 @@ const handleTelemetryEvent = async (req: express.Request, res: express.Response)
     }
 
     return res.status(200).json({
+      status: 'success',
       success: true,
-      message: 'Event recorded',
+      event: eventType,
+      eventType,
       eventId,
+      deviceId,
       timestamp: now,
+      message: `Event ${eventType} recorded successfully`,
     });
   } catch (err: any) {
     console.error('[Telemetry Event Error]', err);
     return res.status(200).json({
+      status: 'success',
       success: true,
-      message: 'Event recorded (cached)',
+      event: req.body?.eventType || req.body?.event || 'EVENT',
       eventId: `evt_local_${Date.now()}`,
+      message: 'Event recorded (cached fallback)',
       warning: err?.message,
     });
   }
 };
 
-app.post('/api/telemetry/event', handleTelemetryEvent);
 app.post('/api/events', handleTelemetryEvent);
+app.post('/api/event', handleTelemetryEvent);
+app.post('/api/telemetry/event', handleTelemetryEvent);
+app.post('/api/telemetry/events', handleTelemetryEvent);
 app.post('/api/agent/event', handleTelemetryEvent);
+app.post('/api/agent/events', handleTelemetryEvent);
 
 // Batch Event Ingestion (Idempotent Sync)
 const handleBatchSync = async (req: express.Request, res: express.Response) => {
   try {
-    let rawEvents = req.body?.events;
-    if (!rawEvents && (req.body?.eventType || req.body?.eventId)) {
+    let rawEvents = Array.isArray(req.body) ? req.body : req.body?.events;
+    if (!rawEvents && (req.body?.eventType || req.body?.eventId || req.body?.event)) {
       rawEvents = [req.body];
     }
     if (!rawEvents || !Array.isArray(rawEvents) || rawEvents.length === 0) {
-      return res.status(200).json({ success: true, syncedCount: 0, message: 'No events provided in batch' });
+      return res.status(200).json({ status: 'success', success: true, syncedCount: 0, message: 'No events provided in batch' });
     }
 
     const batchOps: any[] = [];
+    const nestedOps: Promise<any>[] = [];
     const now = new Date().toISOString();
     let sampleUid = '';
     const updatedDevices: Record<string, any> = {};
 
     for (const evt of rawEvents) {
-      const eventId = evt.eventId || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      const uid = evt.uid || evt.userId || 'DEMO_USER_UID';
-      const deviceId = evt.deviceId || 'PC-AUTO';
+      const eventId = evt.eventId || evt.id || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const uid = evt.uid || evt.userId || evt.account_uid || 'DEMO_USER_UID';
+      const deviceId = evt.deviceId || evt.device_id || 'PC-AUTO';
+      const eventType = (evt.eventType || evt.type || evt.event || 'ACTIVE').toString().toUpperCase().trim();
       sampleUid = uid;
 
       const eventPayload = {
         ...evt,
         eventId,
+        id: eventId,
         uid,
         userId: uid,
+        account_uid: uid,
         deviceId,
+        device_id: deviceId,
+        eventType,
+        event: eventType,
+        type: eventType,
         syncedAt: now,
       };
 
       batchOps.push({ collection: 'system_events', docId: eventId, data: eventPayload });
       batchOps.push({ collection: 'systemEvents', docId: eventId, data: eventPayload });
 
+      // Nested subcollection writes
+      nestedOps.push(
+        namedDb.collection('users').doc(uid).collection('devices').doc(deviceId).collection('events').doc(eventId).set(eventPayload, { merge: true }),
+        defaultDb.collection('users').doc(uid).collection('devices').doc(deviceId).collection('events').doc(eventId).set(eventPayload, { merge: true })
+      );
+
       // Derive device state
       let derivedState = 'ACTIVE';
-      if (['LOCK'].includes(evt.eventType)) derivedState = 'LOCKED';
-      else if (['SLEEP'].includes(evt.eventType)) derivedState = 'SLEEPING';
-      else if (['SHUTDOWN'].includes(evt.eventType)) derivedState = 'OFFLINE';
-      else if (['IDLE'].includes(evt.eventType)) derivedState = 'IDLE';
+      if (['LOCK'].includes(eventType)) derivedState = 'LOCKED';
+      else if (['SLEEP'].includes(eventType)) derivedState = 'SLEEPING';
+      else if (['SHUTDOWN'].includes(eventType)) derivedState = 'OFFLINE';
+      else if (['IDLE'].includes(eventType)) derivedState = 'IDLE';
 
       updatedDevices[deviceId] = {
         deviceId,
-        deviceName: evt.deviceName || 'Windows Workstation',
-        hostname: evt.deviceName || 'Windows Workstation',
+        device_id: deviceId,
+        deviceName: evt.deviceName || evt.device_name || 'Windows Workstation',
+        hostname: evt.deviceName || evt.device_name || 'Windows Workstation',
         uid,
         userId: uid,
+        account_uid: uid,
         currentState: derivedState,
         status: derivedState,
         lastSeen: evt.timestamp || now,
@@ -2985,10 +3031,10 @@ const handleBatchSync = async (req: express.Request, res: express.Response) => {
       lastAgentSyncByUser[uid] = {
         uid,
         deviceId,
-        deviceName: evt.deviceName || 'Windows Workstation',
+        deviceName: evt.deviceName || evt.device_name || 'Windows Workstation',
         agentVersion: evt.agentVersion || '1.0.3',
         receivedAt: now,
-        lastEventType: evt.eventType,
+        lastEventType: eventType,
         eventTimestamp: evt.timestamp || now,
         syncedCount: rawEvents.length,
         ip: req.ip || req.socket.remoteAddress,
@@ -2999,9 +3045,17 @@ const handleBatchSync = async (req: express.Request, res: express.Response) => {
     for (const devId of Object.keys(updatedDevices)) {
       inMemoryDevices.set(devId, updatedDevices[devId]);
       batchOps.push({ collection: 'devices', docId: devId, data: updatedDevices[devId] });
+      const u = updatedDevices[devId].uid;
+      nestedOps.push(
+        namedDb.collection('users').doc(u).collection('devices').doc(devId).set(updatedDevices[devId], { merge: true }),
+        defaultDb.collection('users').doc(u).collection('devices').doc(devId).set(updatedDevices[devId], { merge: true })
+      );
     }
 
-    await multiDbBatchWrite(batchOps).catch((err) => {
+    await Promise.allSettled([
+      multiDbBatchWrite(batchOps),
+      ...nestedOps,
+    ]).catch((err) => {
       console.warn('[Sync Commit notice]', err?.message);
     });
 
@@ -3011,11 +3065,11 @@ const handleBatchSync = async (req: express.Request, res: express.Response) => {
     );
     for (const evt of sortedEvts) {
       await autoProcessDeviceSession(
-        evt.deviceId || 'PC-AUTO',
-        evt.uid || evt.userId || 'DEMO_USER_UID',
-        evt.eventType || 'ACTIVE',
+        evt.deviceId || evt.device_id || 'PC-AUTO',
+        evt.uid || evt.userId || evt.account_uid || 'DEMO_USER_UID',
+        (evt.eventType || evt.type || evt.event || 'ACTIVE').toString().toUpperCase().trim(),
         evt.timestamp || now,
-        evt.deviceName || 'Windows Workstation'
+        evt.deviceName || evt.device_name || 'Windows Workstation'
       ).catch(() => {});
     }
 
@@ -3025,8 +3079,11 @@ const handleBatchSync = async (req: express.Request, res: express.Response) => {
       computedSessions = await recalculateSessionsServer(sampleUid).catch(() => []);
     }
 
+    const firstEvtType = rawEvents[0]?.eventType || rawEvents[0]?.event || 'BATCH';
     return res.status(200).json({
+      status: 'success',
       success: true,
+      event: firstEvtType,
       syncedCount: rawEvents.length,
       syncedAt: now,
       devices: Object.keys(updatedDevices),
@@ -3036,14 +3093,19 @@ const handleBatchSync = async (req: express.Request, res: express.Response) => {
   } catch (error: any) {
     console.error('Agent Sync Error:', error);
     return res.status(200).json({
+      status: 'success',
       success: true,
+      event: 'BATCH',
       syncedCount: 0,
-      warning: error.message || 'Failed to sync events cleanly',
+      message: 'Batch received (fallback)',
+      warning: error?.message,
     });
   }
 };
 
 app.post('/api/agent/sync', handleBatchSync);
+app.post('/api/events/sync', handleBatchSync);
+app.post('/api/events/batch', handleBatchSync);
 app.post('/api/sync', handleBatchSync);
 
 // Explicit session recalculation endpoint

@@ -18,9 +18,12 @@ service cloud.firestore {
       );
     }
 
-    // Users Collection
+    // Users Collection & Subcollections (devices, events, sessions)
     match /users/{userId} {
       allow read, write: if isOwner(userId);
+      match /{allChildren=**} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
     // Devices Collection

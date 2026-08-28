@@ -27,6 +27,11 @@ DEFAULT_DEVICE_ID = "${deviceId || 'PC-AUTO'}"
 DEFAULT_DEVICE_NAME = "${deviceName || 'MY-WINDOWS-PC'}"
 POLL_INTERVAL_SECONDS = 60
 
+# Firebase Firestore REST Configuration
+FIREBASE_PROJECT_ID = "system-usage-logger-pro"
+FIRESTORE_DATABASE_ID = "ai-studio-systemusagelogge-d54ed719-4af6-4b51-a8c0-d8d482a8f242"
+FIREBASE_API_KEY = "AIzaSyB15YRf8KVnenf3TW_MbgK5sHCt096eyiA"
+
 # Paths targeting %APPDATA%\\syslogger-pro\\ (or ~/.syslogger-pro on non-Windows)
 if sys.platform == "win32":
     APPDATA_BASE = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -183,6 +188,9 @@ from config import (
     DEFAULT_DEVICE_ID,
     DEFAULT_DEVICE_NAME,
     POLL_INTERVAL_SECONDS,
+    FIREBASE_PROJECT_ID,
+    FIRESTORE_DATABASE_ID,
+    FIREBASE_API_KEY,
 )
 
 _file_lock = threading.RLock()
@@ -443,37 +451,144 @@ def send_telemetry(event_type: str = "HEARTBEAT", config: dict = None) -> tuple:
             "status": "ONLINE",
             "timestamp": now_utc,
         }
-        try:
-            res = requests.post(f"{server_url}/api/telemetry/heartbeat", json=payload, timeout=6)
-            if res.status_code == 200:
-                append_log(f"Telemetry heartbeat sent (CPU: {cpu_pct}%, Mem: {mem_pct}%)", "DEBUG")
-                return True, payload, "Heartbeat sent successfully"
-            res_alt = requests.post(f"{server_url}/api/agent/heartbeat", json=payload, timeout=6)
-            return res_alt.status_code == 200, payload, "Heartbeat sent via fallback"
-        except Exception as e:
-            append_log(f"Heartbeat notice: {e}", "DEBUG")
-            return False, payload, str(e)
+        heartbeat_endpoints = [
+            f"{server_url}/api/telemetry/heartbeat",
+            f"{server_url}/api/agent/heartbeat",
+            f"{server_url}/api/devices/heartbeat",
+        ]
+        for ep in heartbeat_endpoints:
+            try:
+                res = requests.post(ep, json=payload, timeout=6)
+                if res.status_code in (200, 201):
+                    append_log(f"Telemetry heartbeat sent (CPU: {cpu_pct}%, Mem: {mem_pct}%)", "DEBUG")
+                    return True, payload, "Heartbeat sent successfully"
+            except Exception:
+                continue
+        append_log(f"Heartbeat server notice: offline or unreachable", "DEBUG")
+        return False, payload, "Heartbeat could not reach server endpoints"
     else:
         event_payload = {
             "eventId": f"evt_{uuid.uuid4().hex[:12]}",
             "uid": uid,
+            "account_uid": uid,
+            "userId": uid,
             "deviceId": device_id,
+            "device_id": device_id,
             "deviceName": device_name,
+            "device_name": device_name,
             "eventType": event_type.upper(),
+            "event": event_type.upper(),
+            "type": event_type.upper(),
             "timestamp": now_utc,
             "timezone": time.tzname[0] if time.tzname else "UTC",
             "os": f"Windows {platform.version()}" if sys.platform == "win32" else f"{platform.system()} {platform.release()}",
             "agentVersion": APP_VERSION,
             "source": "Python-Daemon-Tracker",
         }
-        try:
-            res = requests.post(f"{server_url}/api/telemetry/event", json=event_payload, timeout=8)
-            if res.status_code == 200:
-                append_log(f"Telemetry event '{event_type}' sent to server", "SYNCED")
-                return True, event_payload, f"Event '{event_type}' synced"
-        except Exception:
-            pass
-        return sync_events([event_payload], cfg)
+        # Multi-endpoint dispatch: /api/events, /api/event, /api/telemetry/event, /api/agent/event
+        event_endpoints = [
+            f"{server_url}/api/events",
+            f"{server_url}/api/event",
+            f"{server_url}/api/telemetry/event",
+            f"{server_url}/api/agent/event",
+        ]
+        for ep in event_endpoints:
+            try:
+                res = requests.post(ep, json=event_payload, timeout=7)
+                if res.status_code in (200, 201):
+                    append_log(f"Telemetry event '{event_type}' sent to {ep}", "SYNCED")
+                    return True, event_payload, f"Event '{event_type}' synced successfully"
+            except Exception:
+                continue
+
+        # Try batch sync endpoint before direct REST
+        sync_ok, sync_data, sync_msg = sync_events([event_payload], cfg)
+        if sync_ok:
+            return True, event_payload, sync_msg
+
+        # Fallback to direct Firestore REST API
+        rest_ok, rest_msg = send_event_firestore_rest(event_payload, cfg)
+        if rest_ok:
+            append_log(f"Telemetry event '{event_type}' sent directly to Firestore REST", "SYNCED")
+            return True, event_payload, f"Event '{event_type}' recorded to Firestore REST"
+
+        return False, event_payload, f"Event dispatch failed: {rest_msg}"
+
+
+def send_event_firestore_rest(event_payload: dict, config: dict = None) -> tuple:
+    """
+    Directly writes telemetry event and updates device record via Firestore REST API.
+    Used when local/remote Express proxy is running in static Vite preview mode.
+    """
+    cfg = config or load_config()
+    uid = cfg.get("uid", USER_UID).strip()
+    device_id = cfg.get("deviceId", DEFAULT_DEVICE_ID or get_default_device_id()).strip()
+    device_name = cfg.get("deviceName", DEFAULT_DEVICE_NAME or socket.gethostname()).strip()
+    event_id = event_payload.get("eventId") or f"evt_{uuid.uuid4().hex[:12]}"
+    now_utc = event_payload.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    ev_type = (event_payload.get("eventType") or "ACTIVE").upper()
+
+    if not uid:
+        return False, "User UID not configured"
+
+    proj = FIREBASE_PROJECT_ID
+    db_id = FIRESTORE_DATABASE_ID
+    # Build Firestore REST document payload
+    def to_fs_fields(d: dict) -> dict:
+        fields = {}
+        for k, v in d.items():
+            if isinstance(v, str):
+                fields[k] = {"stringValue": v}
+            elif isinstance(v, (int, float)):
+                fields[k] = {"doubleValue": float(v)}
+            elif isinstance(v, bool):
+                fields[k] = {"booleanValue": v}
+            elif isinstance(v, dict):
+                fields[k] = {"mapValue": {"fields": to_fs_fields(v)}}
+            elif v is None:
+                fields[k] = {"nullValue": None}
+            else:
+                fields[k] = {"stringValue": str(v)}
+        return fields
+
+    fs_body = {"fields": to_fs_fields(event_payload)}
+    doc_path = f"users/{uid}/devices/{device_id}/events/{event_id}"
+    url = f"https://firestore.googleapis.com/v1/projects/{proj}/databases/{db_id}/documents/{doc_path}?key={FIREBASE_API_KEY}"
+
+    try:
+        res = requests.patch(url, json=fs_body, timeout=8)
+        if res.status_code in (200, 201):
+            # Also update device document
+            dev_doc_path = f"users/{uid}/devices/{device_id}"
+            dev_url = f"https://firestore.googleapis.com/v1/projects/{proj}/databases/{db_id}/documents/{dev_doc_path}?key={FIREBASE_API_KEY}"
+            derived_state = "ACTIVE"
+            if ev_type in ("LOCK", "LOCKED"):
+                derived_state = "LOCKED"
+            elif ev_type in ("SLEEP", "SLEEPING"):
+                derived_state = "SLEEPING"
+            elif ev_type in ("SHUTDOWN", "OFFLINE"):
+                derived_state = "OFFLINE"
+            
+            dev_body = {
+                "fields": to_fs_fields({
+                    "deviceId": device_id,
+                    "device_id": device_id,
+                    "deviceName": device_name,
+                    "device_name": device_name,
+                    "uid": uid,
+                    "userId": uid,
+                    "account_uid": uid,
+                    "currentState": derived_state,
+                    "status": "OFFLINE" if derived_state == "OFFLINE" else "ONLINE",
+                    "lastSeen": now_utc,
+                    "updatedAt": now_utc,
+                })
+            }
+            requests.patch(dev_url, json=dev_body, timeout=6)
+            return True, "Success (Firestore REST)"
+        return False, f"Firestore REST HTTP {res.status_code}: {res.text[:80]}"
+    except Exception as e:
+        return False, f"Firestore REST exception: {str(e)}"
 
 
 _daemon_thread = None
@@ -662,24 +777,8 @@ def simulate_event(event_type: str, config: dict = None) -> tuple:
     if event_type not in valid_types:
         event_type = "ACTIVE"
 
-    now_utc = datetime.now(timezone.utc).isoformat()
-    tz_name = time.tzname[0] if time.tzname else "UTC"
-
-    event_payload = {
-        "eventId": f"evt_{uuid.uuid4().hex[:12]}",
-        "uid": cfg.get("uid", USER_UID),
-        "deviceId": cfg.get("deviceId", DEFAULT_DEVICE_ID or get_default_device_id()),
-        "deviceName": cfg.get("deviceName", DEFAULT_DEVICE_NAME or socket.gethostname()),
-        "eventType": event_type,
-        "timestamp": now_utc,
-        "timezone": tz_name,
-        "os": f"Windows {platform.version()}" if sys.platform == "win32" else f"{platform.system()} {platform.release()}",
-        "agentVersion": APP_VERSION,
-        "source": "Python-Desktop-Client",
-    }
-
-    success, data, msg = sync_events([event_payload], cfg)
-    return success, event_payload, msg
+    ok, payload, msg = send_telemetry(event_type, cfg)
+    return ok, payload, msg
 `;
 
 // 5. In-Memory app.py Generator
