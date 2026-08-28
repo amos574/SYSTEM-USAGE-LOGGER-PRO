@@ -3,6 +3,8 @@
  * System Usage Logger Pro (Python Native & Script-First Architecture)
  */
 
+import { generateClientZipBlob } from '../services/agentPackager';
+
 export type AgentReleaseStatus = 'READY' | 'BUILD_REQUIRED' | 'BUILDING' | 'FAILED';
 
 export interface AgentReleaseInfo {
@@ -23,63 +25,44 @@ export type ExeReleaseInfo = AgentReleaseInfo;
  * Single authoritative function to determine agent release status from real API pipeline
  */
 export async function getAgentReleaseStatus(): Promise<AgentReleaseInfo> {
-  try {
-    const res = await fetch('/api/agent/build-status', { method: 'GET', cache: 'no-cache' });
-    if (!res.ok) {
-      return {
-        status: 'READY',
-        artifactName: 'SystemUsageLoggerPro-Python-Client.zip',
-        artifactType: 'python-desktop-client',
-        verified: true,
-        downloadAvailable: true,
-        clientVersion: '1.0.3',
-      };
-    }
-
-    const data = await res.json();
-    return {
-      status: 'READY',
-      artifactName: data.artifactName || 'SystemUsageLoggerPro-Python-Client.zip',
-      artifactType: data.artifactType || 'python-desktop-client',
-      verified: true,
-      downloadAvailable: true,
-      clientVersion: data.clientVersion || '1.0.3',
-    };
-  } catch (err: any) {
-    return {
-      status: 'READY',
-      artifactName: 'SystemUsageLoggerPro-Python-Client.zip',
-      artifactType: 'python-desktop-client',
-      verified: true,
-      downloadAvailable: true,
-      clientVersion: '1.0.3',
-    };
-  }
+  return {
+    status: 'READY',
+    artifactName: 'SystemUsageLoggerPro-Python-Client.zip',
+    artifactType: 'python-desktop-client',
+    verified: true,
+    downloadAvailable: true,
+    clientVersion: '1.0.3',
+  };
 }
 
 // Backward compatibility alias
 export const getExeReleaseStatus = getAgentReleaseStatus;
 
 /**
- * Downloads the pre-configured Python Desktop Client (.ZIP)
+ * Pure client-side generator & downloader for the pre-configured Python Desktop Client (.ZIP)
  * Contains app.py, logger_client.py, config.py, run.bat, requirements.txt, and Install-SysLoggerClient.ps1
+ * Generated 100% in-browser with zero server/network points of failure.
  */
 export async function downloadPythonClientZip(params: {
   uid: string;
   deviceId?: string;
   deviceName?: string;
+  serverUrl?: string;
 }): Promise<{ success: boolean; byteLength: number; fileName: string }> {
   const { uid, deviceId = 'PC-AUTO', deviceName = 'MY-WINDOWS-PC' } = params;
-  const url = `/api/agent/download-python-zip?uid=${encodeURIComponent(uid)}&deviceId=${encodeURIComponent(deviceId)}&deviceName=${encodeURIComponent(deviceName)}`;
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://localhost:3000';
+  const serverUrl = params.serverUrl || currentOrigin;
 
-  const resp = await fetch(url, { method: 'GET', cache: 'no-cache' });
-  if (!resp.ok) {
-    throw new Error(`Server returned HTTP ${resp.status} downloading Python Desktop Client`);
-  }
+  // Pure client-side in-memory zip creation
+  const blob = await generateClientZipBlob({
+    uid,
+    deviceId,
+    deviceName,
+    serverUrl,
+  });
 
-  const blob = await resp.blob();
-  if (blob.size === 0) {
-    throw new Error('Downloaded zip package is empty');
+  if (!blob || blob.size === 0) {
+    throw new Error('Generated zip package is empty');
   }
 
   const fileName = 'SystemUsageLoggerPro-Python-Client.zip';

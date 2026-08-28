@@ -1294,3 +1294,57 @@ export async function generateClientZipBuffer(options: ClientPackageOptions): Pr
 
   return zipBuffer;
 }
+
+/**
+ * Pure Client-Side Browser Blob ZIP Generator using JSZip.
+ * Runs 100% in the browser with zero network or backend dependencies.
+ */
+export async function generateClientZipBlob(options: ClientPackageOptions): Promise<Blob> {
+  const zip = new JSZip();
+
+  const uid = options.uid || 'DEMO_USER_UID';
+  const deviceId = options.deviceId || 'PC-AUTO';
+  const deviceName = options.deviceName || 'MY-WINDOWS-PC';
+  const defaultOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://localhost:3000';
+  const serverUrl = (options.serverUrl || defaultOrigin).replace(/\/+$/, '');
+
+  // Add all files to the ZIP in-memory
+  zip.file('config.py', generateConfigPy(serverUrl, uid, deviceId, deviceName));
+  zip.file('requirements.txt', generateRequirementsTxt());
+  zip.file('run.bat', generateRunBat());
+  zip.file('logger_client.py', generateLoggerClientPy(serverUrl, uid, deviceId, deviceName));
+  zip.file('app.py', generateAppPy(serverUrl, uid, deviceId, deviceName));
+  zip.file('Install-SysLoggerClient.ps1', generateInstallerPs1(serverUrl, uid, deviceId, deviceName));
+  zip.file('Uninstall-SysLoggerClient.ps1', generateUninstallerPs1(serverUrl, uid, deviceId));
+  zip.file('config.json', generateConfigJson(serverUrl, uid, deviceId, deviceName));
+  zip.file('README.txt', generateReadmeTxt(serverUrl, uid));
+
+  // Generate Browser Blob
+  const zipBlob = await zip.generateAsync({
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: {
+      level: 9,
+    },
+  });
+
+  return zipBlob;
+}
+
+/**
+ * Helper to download any script or config file directly as a Blob in the browser
+ */
+export function downloadScriptBlob(filename: string, content: string, mimeType: string = 'text/plain;charset=utf-8') {
+  const encoder = new TextEncoder();
+  const uint8 = encoder.encode(content);
+  const blob = new Blob([uint8], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+

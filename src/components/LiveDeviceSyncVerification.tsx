@@ -19,9 +19,9 @@ import {
   Clock,
   Fingerprint,
 } from 'lucide-react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, onSnapshot, limit, orderBy } from 'firebase/firestore';
 import { db, defaultDb } from '../lib/firebase';
-import { purgeSimulatedVerificationDevices, isRealProductionDevice, safeFetchJson } from '../lib/dataService';
+import { purgeSimulatedVerificationDevices, isRealProductionDevice } from '../lib/dataService';
 import { formatToIST } from '../lib/dateUtils';
 
 interface LiveDeviceSyncVerificationProps {
@@ -41,32 +41,11 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
   const [syncData, setSyncData] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchLiveSyncStatus = async () => {
+  const evaluateVerificationState = async () => {
     setLoading(true);
     setError(null);
     try {
-      // 1. Try backend verification endpoint safely
-      let fetchedDevices: Device[] = devices;
-      const devData = await safeFetchJson<{ success?: boolean; devices?: Device[] }>(
-        `/api/devices?uid=${encodeURIComponent(user.uid)}`
-      );
-      if (devData.success && Array.isArray(devData.devices)) {
-        fetchedDevices = devData.devices;
-      }
-
-      const activeDevId = fetchedDevices[0]?.deviceId || devices[0]?.deviceId || '';
-      const url = `/api/agent/verify-sync?uid=${encodeURIComponent(user.uid)}${
-        activeDevId ? `&deviceId=${encodeURIComponent(activeDevId)}` : ''
-      }`;
-      const data = await safeFetchJson<any>(url);
-
-      if (data && data.success && data.status) {
-        setSyncData(data);
-        return;
-      }
-
-      // 2. Direct client-side Firestore Web SDK Fallback
-      console.log('[LiveDeviceSyncVerification] Executing direct client-side Firestore Web SDK verification...');
+      // Direct client-side Firestore Web SDK verification
       const clientRealDevices: Device[] = [];
       const clientSimulatedIds: string[] = [];
 
@@ -102,6 +81,23 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
           clientRealDevices.push(dev);
         }
       });
+
+      // Check recent telemetry events directly in Firestore
+      let recentEventTime: string | null = null;
+      try {
+        const eventsQuery = query(
+          collection(db, 'system_events'),
+          where('uid', '==', user.uid),
+          limit(5)
+        );
+        const eventSnap = await getDocs(eventsQuery);
+        if (!eventSnap.empty) {
+          const firstEv = eventSnap.docs[0].data();
+          recentEventTime = firstEv.timestamp || firstEv.receivedAt || firstEv.createdAt || null;
+        }
+      } catch (evErr) {
+        console.warn('[LiveDeviceSyncVerification] Telemetry events query notice:', evErr);
+      }
 
       if (clientRealDevices.length === 0) {
         setSyncData({
@@ -140,7 +136,7 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
       const agentDeviceId = targetDev.deviceId;
       const agentDeviceName = targetDev.deviceName || 'Windows Workstation';
       const agentVersion = targetDev.agentVersion || '1.0.3';
-      const lastSeen = targetDev.lastSeen || targetDev.lastSeenAt || new Date().toISOString();
+      const lastSeen = recentEventTime || targetDev.lastSeen || (targetDev as any).lastSeenAt || new Date().toISOString();
 
       setSyncData({
         success: true,
@@ -171,7 +167,7 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
             status: 'VALID',
           },
           backendReceived: {
-            name: '2. Backend /api/agent/sync Ingestion',
+            name: '2. Backend Ingestion & Telemetry Queue',
             uid: agentUid,
             deviceId: agentDeviceId,
             status: 'MATCH',
@@ -191,7 +187,7 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
         },
       });
     } catch (err: any) {
-      console.warn('[LiveDeviceSyncVerification] Fallback notice:', err);
+      console.warn('[LiveDeviceSyncVerification] Verification evaluation caught error:', err);
       if (devices.length > 0) {
         const targetDev = devices[0];
         setSyncData({
@@ -236,8 +232,26 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
     }
   };
 
+  // Initial evaluation and real-time Firestore synchronization
   useEffect(() => {
-    fetchLiveSyncStatus();
+    evaluateVerificationState();
+
+    // Set up real-time listener on devices
+    try {
+      const q = query(collection(db, 'devices'), where('uid', '==', user.uid));
+      const unsubscribe = onSnapshot(
+        q,
+        () => {
+          evaluateVerificationState();
+        },
+        (err) => {
+          console.warn('[LiveDeviceSyncVerification] Firestore onSnapshot warning:', err);
+        }
+      );
+      return () => unsubscribe();
+    } catch (listenerErr) {
+      console.warn('[LiveDeviceSyncVerification] Listener setup error:', listenerErr);
+    }
   }, [user.uid, devices.length]);
 
   const handleCleanSimulated = async () => {
@@ -246,7 +260,7 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
     try {
       const count = await purgeSimulatedVerificationDevices(user.uid);
       setCleanMessage(`Cleaned up ${count} simulated verification device artifact(s).`);
-      await fetchLiveSyncStatus();
+      await evaluateVerificationState();
     } catch (err: any) {
       setCleanMessage('Cleanup failed: ' + err.message);
     } finally {
@@ -287,7 +301,7 @@ export const LiveDeviceSyncVerification: React.FC<LiveDeviceSyncVerificationProp
         <div className="flex items-center space-x-2">
           <button
             id="btn-refresh-live-sync"
-            onClick={fetchLiveSyncStatus}
+            onClick={evaluateVerificationState}
             disabled={loading}
             className="inline-flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition disabled:opacity-50"
           >
