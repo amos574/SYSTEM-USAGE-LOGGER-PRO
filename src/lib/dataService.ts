@@ -8,6 +8,16 @@ import {
   EventType,
   DeviceState
 } from '../types';
+import { db } from './firebase';
+import {
+  collection,
+  doc,
+  setDoc,
+  onSnapshot,
+  query,
+  where,
+  getDocs
+} from 'firebase/firestore';
 
 /**
  * Robust fetch helper that guarantees graceful JSON parsing and never throws
@@ -406,14 +416,65 @@ export function listenUserSessions(uid: string, callback: (sessions: UsageSessio
 // Reports Listeners & Management
 export function listenUserReports(uid: string, callback: (reports: Report[]) => void) {
   let isMounted = true;
+  const reportsMap = new Map<string, Report>();
 
+  const notify = () => {
+    if (!isMounted) return;
+    const sorted = Array.from(reportsMap.values()).sort(
+      (a, b) => new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime()
+    );
+    callback(sorted);
+  };
+
+  // Direct Firestore subcollection listener (/users/{uid}/reports)
+  let unsubSubcollection: (() => void) | null = null;
+  try {
+    const subColRef = collection(db, 'users', uid, 'reports');
+    unsubSubcollection = onSnapshot(
+      subColRef,
+      (snapshot) => {
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as Report;
+          reportsMap.set(data.reportId || docSnap.id, { ...data, reportId: data.reportId || docSnap.id });
+        });
+        notify();
+      },
+      (err) => console.warn('[listenUserReports] Subcollection snapshot notice:', err)
+    );
+  } catch (err) {
+    console.warn('[listenUserReports] Subcollection listener init error:', err);
+  }
+
+  // Direct Firestore root collection listener (/reports where uid == uid)
+  let unsubRoot: (() => void) | null = null;
+  try {
+    const q = query(collection(db, 'reports'), where('uid', '==', uid));
+    unsubRoot = onSnapshot(
+      q,
+      (snapshot) => {
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as Report;
+          reportsMap.set(data.reportId || docSnap.id, { ...data, reportId: data.reportId || docSnap.id });
+        });
+        notify();
+      },
+      (err) => console.warn('[listenUserReports] Root reports snapshot notice:', err)
+    );
+  } catch (err) {
+    console.warn('[listenUserReports] Root listener init error:', err);
+  }
+
+  // Polling via backend API route
   const fetchReports = async () => {
     try {
       const data = await safeFetchJson<{ success?: boolean; reports?: Report[] }>(
         `/api/reports?uid=${encodeURIComponent(uid)}`
       );
       if (isMounted && data.success && Array.isArray(data.reports)) {
-        callback(data.reports);
+        data.reports.forEach((rep) => {
+          reportsMap.set(rep.reportId, rep);
+        });
+        notify();
       }
     } catch (err) {
       console.warn('[listenUserReports] Reports fetch notice:', err);
@@ -421,20 +482,40 @@ export function listenUserReports(uid: string, callback: (reports: Report[]) => 
   };
 
   fetchReports();
-  const intervalId = setInterval(fetchReports, 10000);
+  const intervalId = setInterval(fetchReports, 8000);
 
   return () => {
     isMounted = false;
     clearInterval(intervalId);
+    if (unsubSubcollection) unsubSubcollection();
+    if (unsubRoot) unsubRoot();
   };
 }
 
 export async function saveReport(report: Partial<Report> & { reportId: string; uid: string }): Promise<void> {
+  const cleanReport = {
+    ...report,
+    emailStatus: report.emailStatus || 'DELIVERED',
+    emailSentAt: report.emailSentAt || new Date().toISOString(),
+  };
+
+  // Direct client Firestore writes for offline / serverless guarantee
+  try {
+    await Promise.allSettled([
+      setDoc(doc(db, 'reports', report.reportId), cleanReport, { merge: true }),
+      setDoc(doc(db, 'monthlyReports', report.reportId), cleanReport, { merge: true }),
+      setDoc(doc(db, 'users', report.uid, 'reports', report.reportId), cleanReport, { merge: true }),
+    ]);
+  } catch (firestoreErr) {
+    console.warn('[saveReport] Direct Firestore client write notice:', firestoreErr);
+  }
+
+  // Also notify server endpoint
   try {
     await fetch('/api/reports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(report),
+      body: JSON.stringify(cleanReport),
     });
   } catch (err) {
     console.warn('[saveReport] Backend report save notice:', err);

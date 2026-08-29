@@ -195,6 +195,7 @@ export interface Report {
   pdfUrl?: string;
   excelUrl?: string;
   emailStatus: EmailStatus;
+  emailSentAt?: string;
   recipientEmail: string;
   environment: 'PRODUCTION' | 'TEST';
   testRunId?: string;

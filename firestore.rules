@@ -90,6 +90,20 @@ service cloud.firestore {
     }
 
     // Audit Logs & Diagnostics
+    match /reports/{reportId} {
+      allow read, write: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || resource.data.userId == request.auth.uid ||
+        request.resource.data.uid == request.auth.uid || request.resource.data.userId == request.auth.uid
+      );
+    }
+
+    match /monthlyReports/{reportId} {
+      allow read, write: if isAuthenticated() && (
+        resource == null || resource.data.uid == request.auth.uid || resource.data.userId == request.auth.uid ||
+        request.resource.data.uid == request.auth.uid || request.resource.data.userId == request.auth.uid
+      );
+    }
+
     match /audit_logs/{logId} {
       allow read, write: if isAuthenticated() && (
         resource == null || resource.data.uid == request.auth.uid || request.resource.data.uid == request.auth.uid
